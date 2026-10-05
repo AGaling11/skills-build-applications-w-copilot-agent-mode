@@ -9,8 +9,26 @@ const codespaceName = process.env.CODESPACE_NAME;
 const apiBaseUrl = codespaceName
   ? `https://${codespaceName}-8000.app.github.dev`
   : 'http://localhost:8000';
+const frontendOrigin = codespaceName
+  ? `https://${codespaceName}-5173.app.github.dev`
+  : 'http://localhost:5173';
 
 app.use(express.json());
+app.use((request, response, next) => {
+  if (request.get('Origin') === frontendOrigin) {
+    response.setHeader('Access-Control-Allow-Origin', frontendOrigin);
+    response.setHeader('Vary', 'Origin');
+    response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  }
+
+  if (request.method === 'OPTIONS') {
+    response.sendStatus(204);
+    return;
+  }
+
+  next();
+});
 
 app.get('/api/health', (_request, response) => {
   response.json({ status: 'ok', apiBaseUrl });
