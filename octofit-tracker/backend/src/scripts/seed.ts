@@ -1,7 +1,7 @@
 import { randomBytes, scryptSync } from 'node:crypto';
 import mongoose from 'mongoose';
 import { connectDatabase } from '../config/database.js';
-import { Activity, LeaderboardEntry, Team, User, Workout } from '../models/index.js';
+import { activity, leaderboard, team, user, workout } from '../models/index.js';
 
 /**
  * Seed the octofit_db database with test data.
@@ -22,13 +22,13 @@ async function seedDatabase() {
 
     const users = await Promise.all(
       members.map(async (member) => {
-        const salt = randomBytes(16);
-        const passwordHash = `${salt.toString('hex')}:${scryptSync(randomBytes(32), salt, 64).toString('hex')}`;
-        return User.findOneAndUpdate(
-          { email: member.email },
-          { $setOnInsert: { ...member, passwordHash } },
-          { upsert: true, new: true, setDefaultsOnInsert: true },
-        );
+        let savedUser = await user.findOne({ email: member.email });
+        if (!savedUser) {
+          const salt = randomBytes(16);
+          const passwordHash = `${salt.toString('hex')}:${scryptSync(randomBytes(32), salt, 64).toString('hex')}`;
+          savedUser = await user.create({ ...member, passwordHash });
+        }
+        return savedUser;
       }),
     );
 
@@ -39,14 +39,19 @@ async function seedDatabase() {
 
     for (const definition of teamDefinitions) {
       const teamMembers = definition.memberIndexes.map((index) => users[index]!);
-      const team = await Team.findOneAndUpdate(
-        { name: definition.name },
-        { $set: { members: teamMembers.map((user) => user._id) } },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      );
-      await User.updateMany(
+      let savedTeam = await team.findOne({ name: definition.name });
+      if (!savedTeam) {
+        savedTeam = await team.create({
+          name: definition.name,
+          members: teamMembers.map((member) => member._id),
+        });
+      } else {
+        savedTeam.members = teamMembers.map((member) => member._id);
+        await savedTeam.save();
+      }
+      await user.updateMany(
         { _id: { $in: teamMembers.map((user) => user._id) } },
-        { $set: { team: team._id } },
+        { $set: { team: savedTeam._id } },
       );
     }
 
@@ -60,26 +65,31 @@ async function seedDatabase() {
     ];
     const completedAt = new Date('2026-10-01T12:00:00.000Z');
 
-    for (const [index, activity] of activityDefinitions.entries()) {
-      const user = users[activity.userIndex]!;
-      await Activity.findOneAndUpdate(
-        { user: user._id, type: activity.type, completedAt },
-        {
-          $set: {
-            user: user._id,
-            type: activity.type,
-            durationMinutes: activity.durationMinutes,
-            points: activity.points,
-            completedAt,
-          },
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      );
-      await LeaderboardEntry.findOneAndUpdate(
-        { user: user._id },
-        { $set: { points: activity.points + index * 5 } },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      );
+    for (const [index, activityData] of activityDefinitions.entries()) {
+      const activityUser = users[activityData.userIndex]!;
+      const existingActivity = await activity.findOne({
+        user: activityUser._id,
+        type: activityData.type,
+        completedAt,
+      });
+      if (!existingActivity) {
+        await activity.create({
+          user: activityUser._id,
+          type: activityData.type,
+          durationMinutes: activityData.durationMinutes,
+          points: activityData.points,
+          completedAt,
+        });
+      }
+
+      const points = activityData.points + index * 5;
+      const existingEntry = await leaderboard.findOne({ user: activityUser._id });
+      if (existingEntry) {
+        existingEntry.points = points;
+        await existingEntry.save();
+      } else {
+        await leaderboard.create({ user: activityUser._id, points });
+      }
     }
 
     const workouts = [
@@ -120,20 +130,22 @@ async function seedDatabase() {
       },
     ];
 
-    for (const workout of workouts) {
-      await Workout.findOneAndUpdate(
-        { title: workout.title },
-        { $set: workout },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      );
+    for (const workoutData of workouts) {
+      const existingWorkout = await workout.findOne({ title: workoutData.title });
+      if (!existingWorkout) {
+        await workout.create(workoutData);
+      } else {
+        Object.assign(existingWorkout, workoutData);
+        await existingWorkout.save();
+      }
     }
 
     const counts = await Promise.all([
-      User.countDocuments(),
-      Team.countDocuments(),
-      Activity.countDocuments(),
-      LeaderboardEntry.countDocuments(),
-      Workout.countDocuments(),
+      user.countDocuments(),
+      team.countDocuments(),
+      activity.countDocuments(),
+      leaderboard.countDocuments(),
+      workout.countDocuments(),
     ]);
     console.log(
       `Database seeding complete: ${counts[0]} users, ${counts[1]} teams, ${counts[2]} activities, ${counts[3]} leaderboard entries, ${counts[4]} workouts.`,
